@@ -32,23 +32,58 @@
 #include "word_count.h"
 #include "word_helpers.h"
 
+const int NUM_THREADS = 4;
+
+int file_num;
+char** files;
+
+word_count_list_t word_counts;
+
+void* proc_files(void* thread_id) {
+    long tid = (long)thread_id;
+    for (int i = tid; i < file_num; i += NUM_THREADS) {
+        FILE* infile = fopen(files[i], "r");
+        if (infile == NULL) {
+            pthread_exit((void*) 1);
+        }
+        count_words(&word_counts, infile);
+        fclose(infile);
+    }
+    pthread_exit((void*)NULL);
+}
+
 /*
  * main - handle command line, spawning one thread per file.
  */
-int main(int argc, char *argv[]) {
-    /* Create the empty data structure. */
-    word_count_list_t word_counts;
+int main(int argc, char** argv) {
     init_words(&word_counts);
 
     if (argc <= 1) {
-        /* Process stdin in a single thread. */
         count_words(&word_counts, stdin);
     } else {
-        /* TODO */
+        file_num = argc - 1;
+        files = malloc(file_num * sizeof(*files));
+        for (int i = 1; i <= file_num; i++) {
+            files[i - 1] = strdup(argv[i]);
+        }
+
+        pthread_t threads[NUM_THREADS];
+        for (long t = 0; t < NUM_THREADS; t++) {
+            int rc = pthread_create(&threads[t], NULL, proc_files, (void*)t);
+            if (rc) {
+                printf("ERROR; return code from pthread_create() is %d\n", rc);
+                exit(-1);
+            }
+        }
+
+        for (long t = 0; t < NUM_THREADS; t++) {
+            pthread_join(threads[t], NULL);
+        }
     }
 
-    /* Output final result of all threads' work. */
+    // Output final result of all threads' work.
     wordcount_sort(&word_counts, less_count);
     fprint_words(&word_counts, stdout);
-    return 0;
+
+    pthread_exit(NULL);
 }

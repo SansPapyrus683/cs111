@@ -1,0 +1,6 @@
+*.o
+fwords
+lwords
+pthread
+pwords
+words

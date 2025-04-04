@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "word_count.h"
@@ -36,8 +37,8 @@
 /*
  * Read stream of counts and accumulate globally.
  */
-void merge_counts(word_count_list_t *wclist, FILE *count_stream) {
-    char *word;
+void merge_counts(word_count_list_t* wclist, FILE* count_stream) {
+    char* word;
     int count;
     int rv;
     while ((rv = fscanf(count_stream, "%8d\t%ms\n", &count, &word)) == 2) {
@@ -53,7 +54,7 @@ void merge_counts(word_count_list_t *wclist, FILE *count_stream) {
 /*
  * main - handle command line, spawning one process per file.
  */
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
     /* Create the empty data structure. */
     word_count_list_t word_counts;
     init_words(&word_counts);
@@ -62,11 +63,51 @@ int main(int argc, char *argv[]) {
         /* Process stdin in a single process. */
         count_words(&word_counts, stdin);
     } else {
-        /* TODO */
+        pid_t* pids = malloc((argc - 1) * sizeof(pid_t));
+        int (*pipes)[2] = malloc((argc - 1) * 2 * sizeof(int));
+
+        for (int i = 1; i < argc; i++) {
+            int* fd = pipes[i - 1];
+            pipe(fd);
+
+            if ((pids[i - 1] = fork()) < 0) {
+                perror("fork");
+                return 1;
+            } else if (pids[i - 1] == 0) {
+                FILE* read_from = fopen(argv[i], "r");
+                if (read_from == NULL) {
+                    perror("fopen");
+                    exit(1);
+                }
+                count_words(&word_counts, read_from);
+
+                close(fd[0]);
+                FILE* write_to = fdopen(fd[1], "w");
+                fprint_words(&word_counts, write_to);
+                close(fd[1]);
+
+                exit(0);
+            } else {
+                close(fd[1]);
+            }
+        }
+
+        int left = argc - 1;
+        while (left > 0) {
+            pid_t done = wait(NULL);
+            for (int i = 0; i < argc - 1; i++) {
+                if (done == pids[i]) {
+                    FILE* read_from = fdopen(pipes[i][0], "r");
+                    merge_counts(&word_counts, read_from);
+                    close(pipes[i][0]);
+                }
+            }
+
+            left--;
+        }
     }
 
     /* Output final result of all process' work. */
     wordcount_sort(&word_counts, less_count);
     fprint_words(&word_counts, stdout);
-    return 0;
 }
