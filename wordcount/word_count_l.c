@@ -42,7 +42,7 @@ word_count_t *find_word(word_count_list_t *wclist, char *word) {
 word_count_t *add_word_with_count(word_count_list_t *wclist, char *word, int count) {
     word_count_t *wc = find_word(wclist, word);
     if (wc != NULL) {
-        wc->count++;
+        wc->count += count;
     } else if ((wc = malloc(sizeof(word_count_t))) != NULL) {
         wc->word = word;
         wc->count = count;

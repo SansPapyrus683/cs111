@@ -3,9 +3,6 @@ CC=gcc
 CFLAGS=-g -pthread -Wall -std=gnu99
 LDFLAGS=-pthread
 
-CFLAGS += -fsanitize=address -fsanitize=undefined -fsanitize=bounds
-LDFLAGS += -fsanitize=address -fsanitize=undefined -fsanitize=bounds
-
 .PHONY: all clean
 
 all: $(EXECUTABLES)

@@ -41,15 +41,13 @@ word_count_list_t word_counts;
 
 void* proc_files(void* thread_id) {
     long tid = (long)thread_id;
-    for (int i = tid; i < file_num; i += NUM_THREADS) {
-        FILE* infile = fopen(files[i], "r");
-        if (infile == NULL) {
-            pthread_exit((void*) 1);
-        }
-        count_words(&word_counts, infile);
-        fclose(infile);
+    FILE* infile = fopen(files[tid], "r");
+    if (infile == NULL) {
+        pthread_exit((void*) 1);
     }
-    pthread_exit((void*)NULL);
+    count_words(&word_counts, infile);
+    fclose(infile);
+    pthread_exit(NULL);
 }
 
 /*
@@ -67,8 +65,8 @@ int main(int argc, char** argv) {
             files[i - 1] = strdup(argv[i]);
         }
 
-        pthread_t threads[NUM_THREADS];
-        for (long t = 0; t < NUM_THREADS; t++) {
+        pthread_t* threads = malloc(file_num * sizeof(pthread_t));
+        for (long t = 0; t < file_num; t++) {
             int rc = pthread_create(&threads[t], NULL, proc_files, (void*)t);
             if (rc) {
                 printf("ERROR; return code from pthread_create() is %d\n", rc);
@@ -76,7 +74,7 @@ int main(int argc, char** argv) {
             }
         }
 
-        for (long t = 0; t < NUM_THREADS; t++) {
+        for (long t = 0; t < file_num; t++) {
             pthread_join(threads[t], NULL);
         }
     }

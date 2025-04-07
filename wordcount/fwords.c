@@ -22,12 +22,16 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#define _GNU_SOURCE
+
 #include <ctype.h>
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -65,28 +69,35 @@ int main(int argc, char* argv[]) {
     } else {
         pid_t* pids = malloc((argc - 1) * sizeof(pid_t));
         int (*pipes)[2] = malloc((argc - 1) * 2 * sizeof(int));
-
         for (int i = 1; i < argc; i++) {
             int* fd = pipes[i - 1];
-            pipe(fd);
+            if (pipe(fd) != 0) { perror("pipe"); }
+
+            int new_size = 1024 * 1024;
+            if (fcntl(fd[0], F_SETPIPE_SZ, new_size) == -1) {
+                perror("fcntl");
+                return 1;
+            }
 
             if ((pids[i - 1] = fork()) < 0) {
                 perror("fork");
                 return 1;
             } else if (pids[i - 1] == 0) {
+                close(fd[0]);
+
                 FILE* read_from = fopen(argv[i], "r");
                 if (read_from == NULL) {
                     perror("fopen");
-                    exit(1);
+                    return 1;
                 }
                 count_words(&word_counts, read_from);
+                fclose(read_from);
 
-                close(fd[0]);
                 FILE* write_to = fdopen(fd[1], "w");
                 fprint_words(&word_counts, write_to);
-                close(fd[1]);
+                fclose(write_to);
 
-                exit(0);
+                return 0;
             } else {
                 close(fd[1]);
             }
@@ -99,7 +110,6 @@ int main(int argc, char* argv[]) {
                 if (done == pids[i]) {
                     FILE* read_from = fdopen(pipes[i][0], "r");
                     merge_counts(&word_counts, read_from);
-                    close(pipes[i][0]);
                 }
             }
 
