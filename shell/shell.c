@@ -184,9 +184,11 @@ int main(unused int argc, unused char *argv[]) {
                     perror("setpgrp");
                     exit(1);
                 }
-                if (tcsetpgrp(fileno(stdin), getpgrp()) != 0) {
-                    perror("tcsetpgrp");
-                    exit(1);
+                if (shell_is_interactive) {
+                    if (tcsetpgrp(fileno(stdin), getpgrp()) != 0) {
+                        perror("tcsetpgrp");
+                        exit(1);
+                    }
                 }
                 signal(SIGTTOU, SIG_DFL);
                 signal(SIGTTIN, SIG_DFL);
