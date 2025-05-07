@@ -23,7 +23,7 @@
 
 static struct semaphore temporary;
 static thread_func start_process NO_RETURN;
-static bool load(const char *cmdline, void (**eip)(void), void **esp);
+static bool load(char *file_name, void (**eip)(void), void **esp);
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -39,10 +39,20 @@ tid_t process_execute(const char *file_name) {
     fn_copy = palloc_get_page(0);
     if (fn_copy == NULL)
         return TID_ERROR;
-    strlcpy(fn_copy, file_name, PGSIZE);
+    strlcpy(fn_copy, file_name, PGSIZE / 2);
+
+    const int len = strlen(file_name);
+    char* actual_name = &fn_copy[len + 1];
+    strlcpy(actual_name, file_name, PGSIZE / 2);
+    for (int i = 0; actual_name[i] != '\0'; i++) {
+        if (actual_name[i] == ' ') {
+            actual_name[i] = '\0';
+            break;
+        }
+    }
 
     /* Create a new thread to execute FILE_NAME. */
-    tid = thread_create(file_name, PRI_DEFAULT, start_process, fn_copy);
+    tid = thread_create(actual_name, PRI_DEFAULT, start_process, fn_copy);
     if (tid == TID_ERROR)
         palloc_free_page(fn_copy);
     return tid;
@@ -189,7 +199,7 @@ struct Elf32_Phdr {
 #define PF_W 2 /* Writable. */
 #define PF_R 4 /* Readable. */
 
-static bool setup_stack(void **esp);
+static bool setup_stack(void **esp, const char *cmdline);
 static bool validate_segment(const struct Elf32_Phdr *, struct file *);
 static bool load_segment(struct file *file, off_t ofs, uint8_t *upage,
                          uint32_t read_bytes, uint32_t zero_bytes,
@@ -199,7 +209,7 @@ static bool load_segment(struct file *file, off_t ofs, uint8_t *upage,
    Stores the executable's entry point into *EIP
    and its initial stack pointer into *ESP.
    Returns true if successful, false otherwise. */
-bool load(const char *file_name, void (**eip)(void), void **esp) {
+bool load(char *file_name, void (**eip)(void), void **esp) {
     struct thread *t = thread_current();
     struct Elf32_Ehdr ehdr;
     struct file *file = NULL;
@@ -213,11 +223,25 @@ bool load(const char *file_name, void (**eip)(void), void **esp) {
         goto done;
     process_activate();
 
-    /* Open executable file. */
-    file = filesys_open(file_name);
+    bool messed_up = false;
+    for (int i = 0; file_name[i] != '\0'; i++) {
+        if (file_name[i] == ' ') {
+            file_name[i] = '\0';
+            messed_up = true;
+            break;
+        }
+    }
+    file = filesys_open(file_name);  // open the exe
     if (file == NULL) {
         printf("load: %s: open failed\n", file_name);
         goto done;
+    }
+    if (messed_up) {
+        int bad = 0;
+        while (file_name[bad] != '\0') {
+            bad++;
+        }
+        file_name[bad] = ' ';
     }
 
     /* Read and verify executable header. */
@@ -282,7 +306,7 @@ bool load(const char *file_name, void (**eip)(void), void **esp) {
     }
 
     /* Set up stack. */
-    if (!setup_stack(esp))
+    if (!setup_stack(esp, file_name))
         goto done;
 
     /* Start address. */
@@ -400,18 +424,50 @@ static bool load_segment(struct file *file, off_t ofs, uint8_t *upage,
 
 /* Create a minimal stack by mapping a zeroed page at the top of
    user virtual memory. */
-static bool setup_stack(void **esp) {
+static bool setup_stack(void **esp, const char *cmdline) {
     uint8_t *kpage;
     bool success = false;
+
+    const int len = strlen(cmdline);
 
     kpage = palloc_get_page(PAL_USER | PAL_ZERO);
     if (kpage != NULL) {
         success = install_page(((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
         if (success)
-            *esp = PHYS_BASE - 0xc;
+            *esp = PHYS_BASE - 4 * (len + 1);
         else
             palloc_free_page(kpage);
     }
+
+    strlcpy(*esp, cmdline, len + 1);
+
+    char *tok_state = NULL;
+    char *tok = strtok_r(*esp, " ", &tok_state);
+    int argc = 0;
+    while (tok != NULL) {
+        *esp -= 0x4;
+        *((char **) *esp) = tok;
+        tok = strtok_r(NULL, " ", &tok_state);
+        argc++;
+    }
+    *esp -= 0x4;
+    *((char **) *esp) = NULL;
+
+    for (int i = 0; i < (argc + 1) / 2; i++) {
+        char* tmp = ((char **) *esp)[i];
+        ((char**) *esp)[i] = ((char **) *esp)[argc - i];
+        ((char**) *esp)[argc - i] = tmp;
+    }
+    int *arr_start = *esp;
+
+    while (((uint32_t) *esp) % 16 != 8) {
+        *esp -= 0x4;
+    }
+
+    *esp -= 0xc;
+    ((int *) *esp)[1] = argc;
+    ((int **) *esp)[2] = arr_start; // I HAVE NO IDEA WTH IS GOING ON
+
     return success;
 }
 

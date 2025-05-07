@@ -12,7 +12,7 @@ void syscall_init(void) {
     intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall");
 }
 
-static void syscall_handler(struct intr_frame *f UNUSED) {
+static void syscall_handler(struct intr_frame *f) {
     uint32_t *args = ((uint32_t *) f->esp);
 
     /*
@@ -24,9 +24,20 @@ static void syscall_handler(struct intr_frame *f UNUSED) {
 
     /* printf("System call number: %d\n", args[0]); */
 
-    if (args[0] == SYS_EXIT) {
+    switch (args[0]) {
+    case SYS_EXIT:
         f->eax = args[1];
         printf("%s: exit(%d)\n", thread_current()->name, args[1]);
         thread_exit();
-    }
+        break;
+    case SYS_INCREMENT:
+        f->eax = args[1] + 1;
+        break;
+    case SYS_WRITE:
+        const int fd = args[1];
+        if (fd == 1) {
+            putbuf((const char *) args[2], args[3]);
+        }
+        break;
+    };
 }
