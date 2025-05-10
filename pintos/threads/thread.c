@@ -258,18 +258,21 @@ tid_t thread_tid(void) {
 
 /* Deschedules the current thread and destroys it.  Never
    returns to the caller. */
-void thread_exit(void) {
+void thread_exit(int exit_code) {
     ASSERT(!intr_context());
 
+    struct thread *t = thread_current();
+
 #ifdef USERPROG
-    process_exit();
+    printf("%s: exit(%d)\n", t->name, exit_code);
+    process_exit(exit_code);
 #endif
 
     /* Remove thread from all threads list, set our status to dying,
        and schedule another process.  That process will destroy us
        when it calls thread_schedule_tail(). */
     intr_disable();
-    list_remove(&thread_current()->allelem);
+    list_remove(&t->allelem);
     thread_current()->status = THREAD_DYING;
     schedule();
     NOT_REACHED();
@@ -379,7 +382,7 @@ static void kernel_thread(thread_func *function, void *aux) {
 
     intr_enable(); /* The scheduler runs with interrupts off. */
     function(aux); /* Execute the thread function. */
-    thread_exit(); /* If function() returns, kill the thread. */
+    thread_exit(0); /* If function() returns, kill the thread. */
 }
 
 /* Returns the running thread. */
@@ -414,6 +417,8 @@ static void init_thread(struct thread *t, const char *name, int priority) {
     t->stack = (uint8_t *) t + PGSIZE;
     t->priority = priority;
     t->magic = THREAD_MAGIC;
+
+    list_init(&t->ofds);
 
     old_level = intr_disable();
     list_push_back(&all_list, &t->allelem);

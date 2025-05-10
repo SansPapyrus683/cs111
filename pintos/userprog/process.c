@@ -13,13 +13,29 @@
 #include "threads/flags.h"
 #include "threads/init.h"
 #include "threads/interrupt.h"
+#include "threads/malloc.h"
 #include "threads/palloc.h"
 #include "threads/synch.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "userprog/gdt.h"
 #include "userprog/pagedir.h"
+#include "userprog/syscall.h"
 #include "userprog/tss.h"
+
+struct fight {
+   tid_t parent;
+   tid_t kid;
+   int exit_code;
+   int alive;
+   struct semaphore status;
+   struct list_elem elem;
+   struct lock alive_lock;
+};
+
+static bool init_alr = false;
+// list of all parent-child relationships
+static struct list fights;
 
 static struct semaphore temporary;
 static thread_func start_process NO_RETURN;
@@ -30,31 +46,49 @@ static bool load(char *file_name, void (**eip)(void), void **esp);
    before process_execute() returns.  Returns the new process's
    thread id, or TID_ERROR if the thread cannot be created. */
 tid_t process_execute(const char *file_name) {
-    char *fn_copy;
-    tid_t tid;
-
     sema_init(&temporary, 0);
     /* Make a copy of FILE_NAME.
        Otherwise there's a race between the caller and load(). */
-    fn_copy = palloc_get_page(0);
+    char *fn_copy = palloc_get_page(0);
     if (fn_copy == NULL)
         return TID_ERROR;
     strlcpy(fn_copy, file_name, PGSIZE / 2);
 
-    const int len = strlen(file_name);
-    char* actual_name = &fn_copy[len + 1];
-    strlcpy(actual_name, file_name, PGSIZE / 2);
-    for (int i = 0; actual_name[i] != '\0'; i++) {
-        if (actual_name[i] == ' ') {
-            actual_name[i] = '\0';
+    char *actual_name = NULL;
+    int i;
+    for (i = 0; file_name[i] != '\0'; i++) {
+        if (file_name[i] == ' ') {
+            actual_name = malloc(i + 1);
+            strlcpy(actual_name, file_name, i + 1);
             break;
         }
     }
+    if (actual_name == NULL) {
+        actual_name = malloc(i + 1);
+        strlcpy(actual_name, file_name, i + 1);
+    }
 
     /* Create a new thread to execute FILE_NAME. */
-    tid = thread_create(actual_name, PRI_DEFAULT, start_process, fn_copy);
-    if (tid == TID_ERROR)
+    tid_t tid = thread_create(actual_name, PRI_DEFAULT, start_process, fn_copy);
+    if (tid == TID_ERROR) {
         palloc_free_page(fn_copy);
+    }
+
+    if (!init_alr) {
+        init_alr = true; // aspodifjapsodijfapsoidjfapsodijfpoasijdfpoaisjdf
+        list_init(&fights);
+    }
+    tid_t parent = thread_current()->tid;
+    if (parent != -1) {
+        struct fight *f = malloc(sizeof(struct fight));
+        f->parent = parent;
+        f->kid = tid;
+        f->alive = 2;
+        lock_init(&f->alive_lock);
+        sema_init(&f->status, 0);
+        list_push_back(&fights, &f->elem);
+    }
+
     return tid;
 }
 
@@ -70,12 +104,16 @@ static void start_process(void *file_name_) {
     if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
+
+    lock_acquire(&fs_lock);
     success = load(file_name, &if_.eip, &if_.esp);
+    lock_release(&fs_lock);
 
     /* If load failed, quit. */
     palloc_free_page(file_name);
-    if (!success)
-        thread_exit();
+    if (!success) {
+        thread_exit(-1);
+    }
 
     /* Start the user process by simulating a return from an
        interrupt, implemented by intr_exit (in
@@ -96,13 +134,30 @@ static void start_process(void *file_name_) {
 
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
-int process_wait(tid_t child_tid UNUSED) {
-    sema_down(&temporary);
-    return 0;
+int process_wait(tid_t child_tid) {
+    const tid_t par_tid = thread_current()->tid;
+    struct fight *fight = NULL;
+    for (struct list_elem *at = list_begin(&fights); at != list_end(&fights);
+         at = list_next(at)) {
+        struct fight *f = list_entry(at, struct fight, elem);
+        if (f->kid == child_tid && f->parent == par_tid) {
+            fight = f;
+            break;
+        }
+    }
+    if (fight == NULL) {
+        return -1;
+    }
+
+    sema_down(&fight->status);
+    list_remove(&fight->elem);
+    int ret = fight->exit_code;
+    free(fight);
+    return ret;
 }
 
 /* Free the current process's resources. */
-void process_exit(void) {
+void process_exit(int exit_code) {
     struct thread *cur = thread_current();
     uint32_t *pd;
 
@@ -121,7 +176,41 @@ void process_exit(void) {
         pagedir_activate(NULL);
         pagedir_destroy(pd);
     }
-    sema_up(&temporary);
+
+    lock_acquire(&fs_lock);
+    file_close(cur->exe);  // closing it allows writes again
+
+    // they actually don't check for this but i should still prolly have it
+    while (!list_empty(&cur->ofds)) {
+        struct list_elem* e = list_pop_front(&cur->ofds);
+        struct ofd* ofd = list_entry(e, struct ofd, elem);
+        file_close(ofd->file);
+        free(ofd);
+    }
+    lock_release(&fs_lock);
+
+    tid_t curr_tid = cur->tid;
+    for (struct list_elem *at = list_begin(&fights); at != list_end(&fights);) {
+        struct fight *f = list_entry(at, struct fight, elem);
+        if (f->parent == curr_tid || f->kid == curr_tid) {
+            lock_acquire(&f->alive_lock);
+
+            if (f->kid == curr_tid) {
+                f->exit_code = exit_code;
+                sema_up(&f->status);
+            }
+
+            if (--f->alive == 0) {
+                at = list_remove(&f->elem);
+                free(f);
+            } else {
+                lock_release(&f->alive_lock);
+                at = list_next(at);
+            }
+        } else {
+            at = list_next(at);  // scuff, scuff, scuff
+        }
+    }
 }
 
 /* Sets up the CPU for running user code in the current
@@ -212,7 +301,6 @@ static bool load_segment(struct file *file, off_t ofs, uint8_t *upage,
 bool load(char *file_name, void (**eip)(void), void **esp) {
     struct thread *t = thread_current();
     struct Elf32_Ehdr ehdr;
-    struct file *file = NULL;
     off_t file_ofs;
     bool success = false;
     int i;
@@ -231,8 +319,8 @@ bool load(char *file_name, void (**eip)(void), void **esp) {
             break;
         }
     }
-    file = filesys_open(file_name);  // open the exe
-    if (file == NULL) {
+    struct file *exe = filesys_open(file_name);
+    if (exe == NULL) {
         printf("load: %s: open failed\n", file_name);
         goto done;
     }
@@ -245,7 +333,7 @@ bool load(char *file_name, void (**eip)(void), void **esp) {
     }
 
     /* Read and verify executable header. */
-    if (file_read(file, &ehdr, sizeof ehdr) != sizeof ehdr ||
+    if (file_read(exe, &ehdr, sizeof ehdr) != sizeof ehdr ||
         memcmp(ehdr.e_ident, "\177ELF\1\1\1", 7) || ehdr.e_type != 2 ||
         ehdr.e_machine != 3 || ehdr.e_version != 1 ||
         ehdr.e_phentsize != sizeof(struct Elf32_Phdr) || ehdr.e_phnum > 1024) {
@@ -258,11 +346,11 @@ bool load(char *file_name, void (**eip)(void), void **esp) {
     for (i = 0; i < ehdr.e_phnum; i++) {
         struct Elf32_Phdr phdr;
 
-        if (file_ofs < 0 || file_ofs > file_length(file))
+        if (file_ofs < 0 || file_ofs > file_length(exe))
             goto done;
-        file_seek(file, file_ofs);
+        file_seek(exe, file_ofs);
 
-        if (file_read(file, &phdr, sizeof phdr) != sizeof phdr)
+        if (file_read(exe, &phdr, sizeof phdr) != sizeof phdr)
             goto done;
         file_ofs += sizeof phdr;
         switch (phdr.p_type) {
@@ -278,7 +366,7 @@ bool load(char *file_name, void (**eip)(void), void **esp) {
         case PT_SHLIB:
             goto done;
         case PT_LOAD:
-            if (validate_segment(&phdr, file)) {
+            if (validate_segment(&phdr, exe)) {
                 bool writable = (phdr.p_flags & PF_W) != 0;
                 uint32_t file_page = phdr.p_offset & ~PGMASK;
                 uint32_t mem_page = phdr.p_vaddr & ~PGMASK;
@@ -296,8 +384,8 @@ bool load(char *file_name, void (**eip)(void), void **esp) {
                     read_bytes = 0;
                     zero_bytes = ROUND_UP(page_offset + phdr.p_memsz, PGSIZE);
                 }
-                if (!load_segment(file, file_page, (void *) mem_page,
-                                  read_bytes, zero_bytes, writable))
+                if (!load_segment(exe, file_page, (void *) mem_page, read_bytes,
+                                  zero_bytes, writable))
                     goto done;
             } else
                 goto done;
@@ -316,7 +404,12 @@ bool load(char *file_name, void (**eip)(void), void **esp) {
 
 done:
     /* We arrive here whether the load is successful or not. */
-    file_close(file);
+    if (success) {
+        t->exe = exe;
+        file_deny_write(exe);
+    } else {
+        file_close(exe);
+    }
     return success;
 }
 
@@ -454,9 +547,9 @@ static bool setup_stack(void **esp, const char *cmdline) {
     *((char **) *esp) = NULL;
 
     for (int i = 0; i < (argc + 1) / 2; i++) {
-        char* tmp = ((char **) *esp)[i];
-        ((char**) *esp)[i] = ((char **) *esp)[argc - i];
-        ((char**) *esp)[argc - i] = tmp;
+        char *tmp = ((char **) *esp)[i];
+        ((char **) *esp)[i] = ((char **) *esp)[argc - i];
+        ((char **) *esp)[argc - i] = tmp;
     }
     int *arr_start = *esp;
 

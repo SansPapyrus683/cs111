@@ -19,12 +19,18 @@ enum thread_status {
 /* Thread identifier type.
    You can redefine this to whatever type you like. */
 typedef int tid_t;
-#define TID_ERROR ((tid_t) -1) /* Error value for tid_t. */
+#define TID_ERROR ((tid_t) - 1) /* Error value for tid_t. */
 
 /* Thread priorities. */
 #define PRI_MIN 0 /* Lowest priority. */
 #define PRI_DEFAULT 31 /* Default priority. */
 #define PRI_MAX 63 /* Highest priority. */
+
+struct ofd {
+    int fd;
+    struct file *file;
+    struct list_elem elem;
+};
 
 /* A kernel thread or user process.
 
@@ -97,7 +103,13 @@ struct thread {
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir; /* Page directory. */
+
+    // what's the difference???? i have no idea!!!!
+    struct file *exe;
 #endif
+
+    // oh my god i feel so dirty for adding these
+    struct list ofds;
 
     /* Owned by thread.c. */
     unsigned magic; /* Detects stack overflow. */
@@ -124,7 +136,7 @@ struct thread *thread_current(void);
 tid_t thread_tid(void);
 const char *thread_name(void);
 
-void thread_exit(void) NO_RETURN;
+void thread_exit(int exit_code) NO_RETURN;
 void thread_yield(void);
 
 /* Performs some operation on thread t, given auxiliary data AUX. */
