@@ -68,6 +68,18 @@ tid_t process_execute(const char *file_name) {
         strlcpy(actual_name, file_name, i + 1);
     }
 
+    const int at_least_free = 8;
+    void* test[at_least_free];
+    for (int i = 0; i < at_least_free; i++) {
+        test[i] = palloc_get_page(i % 2 == 0 ? PAL_USER : 0);
+        if (test[i] == NULL) {
+            return TID_ERROR;
+        }
+    }
+    for (int i = 0; i < at_least_free; i++) {
+        palloc_free_page(test[i]);
+    }
+
     /* Create a new thread to execute FILE_NAME. */
     tid_t tid = thread_create(actual_name, PRI_DEFAULT, start_process, fn_copy);
     if (tid == TID_ERROR) {
@@ -109,8 +121,8 @@ static void start_process(void *file_name_) {
     success = load(file_name, &if_.eip, &if_.esp);
     lock_release(&fs_lock);
 
-    /* If load failed, quit. */
     palloc_free_page(file_name);
+    /* If load failed, quit. */
     if (!success) {
         thread_exit(-1);
     }
