@@ -49,8 +49,6 @@ static uint32_t get_arg(uint32_t *args, int ind) {
 static void syscall_handler(struct intr_frame *f) {
     uint32_t *args = ((uint32_t *) f->esp);
 
-    // printf("System call number: %d\n", get_arg(args, 0]);
-
     int ret_val;
     switch (get_arg(args, 0)) {
     case SYS_EXIT: {
