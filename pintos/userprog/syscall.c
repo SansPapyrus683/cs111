@@ -114,23 +114,7 @@ static void syscall_handler(struct intr_frame *f) {
     case SYS_EXEC: {
         const char *cmdline = (const char *) get_arg(args, 1);
         fine_str(cmdline);
-
-        char *space = strchr(cmdline, ' ');
-        size_t up_to =
-            space == NULL ? strlen(cmdline) : (size_t) (space - cmdline);
-        char *file_name = malloc(up_to + 1);
-        strlcpy(file_name, cmdline, up_to + 1);
-
-        lock_acquire(&fs_lock);
-        struct file *test = filesys_open(file_name);
-        file_close(test);
-        lock_release(&fs_lock);
-        
-        if (test == NULL) {
-            ret_val = -1;
-        } else {
-            ret_val = process_execute(cmdline);
-        }
+        ret_val = process_execute(cmdline);
     } break;
     case SYS_WAIT:
         ret_val = process_wait(get_arg(args, 1));

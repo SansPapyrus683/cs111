@@ -24,20 +24,25 @@
 #include "userprog/tss.h"
 
 struct fight {
-   tid_t parent;
-   tid_t kid;
-   int exit_code;
-   int alive;
-   struct semaphore status;
-   struct list_elem elem;
-   struct lock alive_lock;
+    tid_t parent;
+    tid_t kid;
+    int exit_code;
+    int alive;
+    struct semaphore status;
+    struct lock alive_lock;
+    struct list_elem elem;
+};
+
+struct start_proc_args {
+    char *file_name;
+    bool ok;
+    struct semaphore start;
+    struct semaphore end;
 };
 
 static bool init_alr = false;
-// list of all parent-child relationships
-static struct list fights;
+static struct list fights; // parent-child relationships
 
-static struct semaphore temporary;
 static thread_func start_process NO_RETURN;
 static bool load(char *file_name, void (**eip)(void), void **esp);
 
@@ -46,7 +51,11 @@ static bool load(char *file_name, void (**eip)(void), void **esp);
    before process_execute() returns.  Returns the new process's
    thread id, or TID_ERROR if the thread cannot be created. */
 tid_t process_execute(const char *file_name) {
-    sema_init(&temporary, 0);
+    if (!init_alr) {  // ts so scuffed :heartbreak:
+        init_alr = true;
+        list_init(&fights);
+    }
+
     /* Make a copy of FILE_NAME.
        Otherwise there's a race between the caller and load(). */
     char *fn_copy = palloc_get_page(0);
@@ -68,28 +77,22 @@ tid_t process_execute(const char *file_name) {
         strlcpy(actual_name, file_name, i + 1);
     }
 
-    const int at_least_free = 8;
-    void* test[at_least_free];
-    for (int i = 0; i < at_least_free; i++) {
-        test[i] = palloc_get_page(i % 2 == 0 ? PAL_USER : 0);
-        if (test[i] == NULL) {
-            return TID_ERROR;
-        }
-    }
-    for (int i = 0; i < at_least_free; i++) {
-        palloc_free_page(test[i]);
-    }
+    struct start_proc_args *args = malloc(sizeof(struct start_proc_args));
+    args->file_name = fn_copy;
+    sema_init(&args->start, 0);
+    sema_init(&args->end, 0);
 
     /* Create a new thread to execute FILE_NAME. */
-    tid_t tid = thread_create(actual_name, PRI_DEFAULT, start_process, fn_copy);
+    tid_t tid = thread_create(actual_name, PRI_DEFAULT, start_process, args);
     if (tid == TID_ERROR) {
         palloc_free_page(fn_copy);
     }
-
-    if (!init_alr) {
-        init_alr = true; // aspodifjapsodijfapsoidjfapsodijfpoasijdfpoaisjdf
-        list_init(&fights);
+    
+    sema_down(&args->start);
+    if (!args->ok) {
+        return TID_ERROR;
     }
+
     tid_t parent = thread_current()->tid;
     if (parent != -1) {
         struct fight *f = malloc(sizeof(struct fight));
@@ -100,16 +103,17 @@ tid_t process_execute(const char *file_name) {
         sema_init(&f->status, 0);
         list_push_back(&fights, &f->elem);
     }
+    sema_up(&args->end);
 
     return tid;
 }
 
 /* A thread function that loads a user process and starts it
    running. */
-static void start_process(void *file_name_) {
-    char *file_name = file_name_;
+static void start_process(void *args_) {
+    struct start_proc_args *args = args_;
+    char *file_name = args->file_name;
     struct intr_frame if_;
-    bool success;
 
     /* Initialize interrupt frame and load executable. */
     memset(&if_, 0, sizeof if_);
@@ -118,14 +122,18 @@ static void start_process(void *file_name_) {
     if_.eflags = FLAG_IF | FLAG_MBS;
 
     lock_acquire(&fs_lock);
-    success = load(file_name, &if_.eip, &if_.esp);
+    args->ok = load(file_name, &if_.eip, &if_.esp);
     lock_release(&fs_lock);
 
     palloc_free_page(file_name);
+    sema_up(&args->start);
     /* If load failed, quit. */
-    if (!success) {
+    if (!args->ok) {
+        free(args);
         thread_exit(-1);
     }
+    sema_down(&args->end);
+    free(args);
 
     /* Start the user process by simulating a return from an
        interrupt, implemented by intr_exit (in
@@ -190,12 +198,12 @@ void process_exit(int exit_code) {
     }
 
     lock_acquire(&fs_lock);
-    file_close(cur->exe);  // closing it allows writes again
+    file_close(cur->exe); // closing it allows writes again
 
     // they actually don't check for this but i should still prolly have it
     while (!list_empty(&cur->ofds)) {
-        struct list_elem* e = list_pop_front(&cur->ofds);
-        struct ofd* ofd = list_entry(e, struct ofd, elem);
+        struct list_elem *e = list_pop_front(&cur->ofds);
+        struct ofd *ofd = list_entry(e, struct ofd, elem);
         file_close(ofd->file);
         free(ofd);
     }
@@ -220,7 +228,7 @@ void process_exit(int exit_code) {
                 at = list_next(at);
             }
         } else {
-            at = list_next(at);  // scuff, scuff, scuff
+            at = list_next(at); // scuff, scuff, scuff
         }
     }
 }
